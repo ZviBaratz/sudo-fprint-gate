@@ -1,0 +1,80 @@
+# Pre-commit hooks for sudo-fprint-gate
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+# Update hooks: pre-commit autoupdate
+
+repos:
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-yaml
+        name: Check YAML syntax
+      - id: end-of-file-fixer
+        name: Fix end of files
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+      - id: detect-private-key
+        name: Detect private keys
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+        name: Check for large files
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+      - id: check-case-conflict
+        name: Check for case conflicts
+      - id: mixed-line-ending
+        name: Check line endings
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    # v0.11.0.1-1 ships the same shellcheck 0.11.0 as v0.11.0.1. It adds `exclude_types: [zsh]`
+    # to the hook's own definition and needs Python 3.10 or later.
+    rev: v0.11.0.1-1
+    hooks:
+      - id: shellcheck
+        name: Shellcheck
+        # Runs the pinned shellcheck under a memory bound, so a blow-up fails this hook instead of
+        # squeezing the machine: the why and the size of the bound are in the wrapper's header.
+        entry: ./scripts/shellcheck-bounded.sh
+        # No code is excluded, and no file: every shell file here is bash or POSIX sh, so a file
+        # shellcheck cannot parse fails the hook rather than passing unchecked. pre-commit types
+        # pam/fingerprint-should-offer as shell by its shebang, so the gate is checked too.
+        args: ['-x']
+
+  # Secret detection with gitleaks
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.2
+    hooks:
+      - id: gitleaks
+        name: Gitleaks (secret detection)
+        description: Scan for hardcoded secrets, API keys, tokens, passwords
+
+  - repo: local
+    hooks:
+      # Every state table under scripts/ must assert its own row total, which
+      # catches a check that VANISHED -- an early exit, an emptied loop, an
+      # unset variable under `set -u` -- where every row that still ran passes
+      # and the suite prints a green summary. Well under a second, so it runs on
+      # any change under scripts/.
+      #
+      # Exit 2 ("could not evaluate") FAILS here rather than warning: no
+      # scripts/ directory, no test-*.sh at all, or an unreadable suite is a
+      # tree a contributor needs stopped rather than skipped.
+      - id: check-state-table-totals
+        name: State tables assert their row totals
+        entry: ./scripts/check-state-table-totals.sh
+        language: system
+        pass_filenames: false
+        files: '^scripts/'
+
+      - id: check-conflict-markers-anytime
+        name: Check for conflict markers (outside a merge too)
+        # check-merge-conflict above is INERT outside a merge: it inspects files
+        # only when .git/MERGE_MSG and MERGE_HEAD exist. A marker that survives a
+        # resolution gets committed after the merge state is cleared, so this
+        # covers <<<<<<<, ||||||| and >>>>>>> whenever pre-commit runs.
+        # `={7}` is deliberately absent: seven equals signs are ordinary text.
+        entry: '^(<{7}|>{7}|\|{7})'
+        language: pygrep
+        types: [text]

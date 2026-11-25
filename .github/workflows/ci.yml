@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  workflow_dispatch:  # Allow manual triggering
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only for every job, written here rather than left to the repository's
+# default, so the file says what its token can do. A job that needs more grants
+# it itself.
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Every file with a shell shebang: the *.sh scripts and the gate,
+      # pam/fingerprint-should-offer, which has no extension because pam_exec
+      # runs it by its installed name.
+      - name: Run ShellCheck on all shell scripts
+        run: |
+          scripts=$(git ls-files -z | xargs -0 grep -l -E '^#!/(usr/bin/env (ba)?sh|bin/(ba)?sh)' 2>/dev/null || true)
+
+          # This repository always has shell scripts, so finding none means the
+          # search broke, and a lint over nothing must not read as a pass.
+          if [ -n "$scripts" ]; then
+            echo "Checking scripts: $scripts"
+            echo "$scripts" | xargs shellcheck -x
+          else
+            echo "::error title=ShellCheck::no shell scripts found to check"
+            exit 1
+          fi
+
+  # Every hook in .pre-commit-config.yaml, over every file, so a pull request
+  # meets the hooks a local commit does. A hook that fails, or that changes a
+  # file, makes pre-commit exit non-zero, and so the step and the job fail.
+  pre-commit:
+    name: Pre-commit Hooks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # The shellcheck hook needs Python 3.10 or later.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit on all files
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  gitleaks:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    # On a pull request the action lists the PR's commits through the API, which
+    # needs pull-requests: read. Nothing here writes, so the comments the action
+    # would post on a finding are off: a finding fails the job.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for gitleaks
+
+      # A repository on a personal account needs no GITLEAKS_LICENSE.
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+
+  state-tables:
+    name: State Tables
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # No package to install. The gate's table runs the stanza through the
+      # runner's own libpam (Linux-PAM >= 1.4, for pam_start_confdir) with
+      # libpam-modules' pam_permit, pam_deny, pam_exec, pam_echo and pam_unix,
+      # all on the image; the reader and the lid are always stand-ins, so no row
+      # needs pam_fprintd, a fingerprint reader or a laptop lid. prlimit is
+      # util-linux, also on the image.
+      # Each table runs even when an earlier one failed, so one red table hides no other's rows.
+      - name: Run the sudo-fprint-gate state table
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-sudo-fprint-gate.sh
+
+      - name: Run the row-total guard's state table
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-state-table-totals.sh
+
+      - name: Run the bounded shellcheck's state table
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-shellcheck-bounded.sh
